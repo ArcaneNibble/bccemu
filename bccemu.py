@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 import datetime
+import glob
+import os
 import pefile
+import stat
 import struct
 import sys
 import unicorn as uc
@@ -63,10 +66,13 @@ print(f"Args block: {env_args}")
 last_error = 0
 ERROR_FILE_NOT_FOUND = 2
 ERROR_INVALID_HANDLE = 6
+ERROR_NO_MORE_FILES = 18
 ERROR_NOT_SUPPORTED = 50
 ERROR_MOD_NOT_FOUND = 126
 ERROR_PROC_NOT_FOUND = 127
 ERROR_INVALID_ADDRESS = 487
+
+hfind_table = []
 
 def get_stack_arg(emu, n):
     esp = emu.reg_read(ux.UC_X86_REG_ESP)
@@ -261,14 +267,71 @@ def GetSystemInfo(emu):
 def GetLastError(emu):
     return last_error
 
+MAX_PATH = 260
+def fn_to_find_data(fn):
+    s = os.stat(fn)
+
+    if stat.S_ISDIR(s.st_mode):
+        ret = struct.pack("<I", 0x10)
+    else:
+        ret = struct.pack("<I", 0x80)
+
+    # XXX skip timestamps
+    ret += b'\x00\x00\x00\x00\x00\x00\x00\x00' * 3
+    ret += struct.pack("<IIII", s.st_size >> 32, s.st_size & 0xffffffff, 0, 0)
+    ret += fn.encode(errors='surrogateescape') + b'\x00'
+    return ret
+
 def FindFirstFileA(emu):
     global last_error
     p_fn = get_stack_arg(emu, 0)
-    fn = get_c_str(emu, p_fn)
+    fn = get_c_str(emu, p_fn).decode(errors='surrogateescape')
     out = get_stack_arg(emu, 1)
     print(f"FindFirstFileA {fn}")
-    last_error = ERROR_FILE_NOT_FOUND
-    return 0xffffffff
+
+    files = glob.glob(fn)
+    if len(files) == 0:
+        last_error = ERROR_FILE_NOT_FOUND
+        return 0xffffffff
+
+    find_data = fn_to_find_data(files[0])
+    emu.mem_write(out, find_data)
+
+    hfind = len(hfind_table) << 2
+    hfind_table.append(files[1:])
+    return hfind
+
+def FindNextFileA(emu):
+    global last_error
+    hfind = get_stack_arg(emu, 0) >> 2
+    out = get_stack_arg(emu, 1)
+
+    if hfind >= len(hfind_table):
+        last_error = ERROR_INVALID_HANDLE
+        return 0
+
+    files = hfind_table[hfind >> 2]
+    print(f"FindNextFileA {files}")
+
+    if len(files) == 0:
+        last_error = ERROR_NO_MORE_FILES
+        return 0
+
+    find_data = fn_to_find_data(files[0])
+    emu.mem_write(out, find_data)
+    hfind_table[hfind >> 2] = files[1:]
+    return 1
+
+def FindClose(emu):
+    global last_error
+    hfind = get_stack_arg(emu, 0) >> 2
+
+    if hfind >= len(hfind_table):
+        last_error = ERROR_INVALID_HANDLE
+        return 0
+
+    hfind_table[hfind >> 2] = []
+    return 1
 
 def GetFileAttributesA(emu):
     global last_error
@@ -329,6 +392,20 @@ def GetVolumeInformationA(emu):
 
     return 1
 
+def FileTimeToLocalFileTime(emu):
+    inp = get_stack_arg(emu, 0)
+    outp = get_stack_arg(emu, 1)
+    emu.mem_write(outp, b'\x00\x00\x00\x00\x00\x00\x00\x00')
+    return 1
+
+def FileTimeToDosDateTime(emu):
+    inp = get_stack_arg(emu, 0)
+    outp_date = get_stack_arg(emu, 1)
+    outp_time = get_stack_arg(emu, 1)
+    emu.mem_write(outp_date, b'\x00\x00\x00\x00')
+    emu.mem_write(outp_time, b'\x00\x00\x00\x00')
+    return 1
+
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
     (b'KERNEL32.DLL', b'GetProcAddress'): (GetProcAddress, 2),
@@ -349,9 +426,13 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetSystemInfo'): (GetSystemInfo, 1),
     (b'KERNEL32.DLL', b'GetLastError'): (GetLastError, 0),
     (b'KERNEL32.DLL', b'FindFirstFileA'): (FindFirstFileA, 2),
+    (b'KERNEL32.DLL', b'FindNextFileA'): (FindNextFileA, 2),
+    (b'KERNEL32.DLL', b'FindClose'): (FindClose, 1),
     (b'KERNEL32.DLL', b'GetFileAttributesA'): (GetFileAttributesA, 1),
     (b'KERNEL32.DLL', b'CreateFileA'): (CreateFileA, 7),
     (b'KERNEL32.DLL', b'GetVolumeInformationA'): (GetVolumeInformationA, 8),
+    (b'KERNEL32.DLL', b'FileTimeToLocalFileTime'): (FileTimeToLocalFileTime, 2),
+    (b'KERNEL32.DLL', b'FileTimeToDosDateTime'): (FileTimeToDosDateTime, 3),
 }
 
 # load the headers
