@@ -210,6 +210,12 @@ def GetFileType(emu):
         return 3
     return 1
 
+def SetConsoleCtrlHandler(emu):
+    fn = get_stack_arg(emu, 0)
+    add = get_stack_arg(emu, 1)
+    print(f"SetConsoleCtrlHandler {"add" if add else "del"} @ {fn:08x} (DUMMY)")
+    return 1
+
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
     (b'KERNEL32.DLL', b'GetProcAddress'): (GetProcAddress, 2),
@@ -219,12 +225,13 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleFileNameA'): (GetModuleFileNameA, 3),
     (b'KERNEL32.DLL', b'VirtualAlloc'): (VirtualAlloc, 4),
     (b'KERNEL32.DLL', b'VirtualFree'): (VirtualFree, 3),
-    (b'KERNEL32.DLL', b'GetStdHandle'): (GetStdHandle, 4),
+    (b'KERNEL32.DLL', b'GetStdHandle'): (GetStdHandle, 1),
     (b'KERNEL32.DLL', b'WriteFile'): (WriteFile, 5),
     (b'KERNEL32.DLL', b'ExitProcess'): (ExitProcess, 1),
     (b'KERNEL32.DLL', b'SetHandleCount'): (SetHandleCount, 1),
     (b'KERNEL32.DLL', b'GetStartupInfoA'): (GetStartupInfoA, 1),
     (b'KERNEL32.DLL', b'GetFileType'): (GetFileType, 1),
+    (b'KERNEL32.DLL', b'SetConsoleCtrlHandler'): (SetConsoleCtrlHandler, 2),
 }
 
 # load the headers
