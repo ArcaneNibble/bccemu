@@ -34,7 +34,7 @@ FORCE_NO_JIT = True
 TRACE = False
 
 # load the PE
-pe = pefile.PE('BC5/BIN/BCC32.EXE')
+pe = pefile.PE('BC5/BIN/TLINK32.EXE')
 
 img_base = pe.OPTIONAL_HEADER.ImageBase
 img_sz = pe.OPTIONAL_HEADER.SizeOfImage
@@ -156,14 +156,17 @@ def VirtualAlloc(emu):
         last_error = ERROR_INVALID_ADDRESS
         return 0
 
+    print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x}")
+
     addr = HEAP_START
+    if sz == 0:
+        sz = 1
     real_sz = (sz + PAGE_SZ - 1) // PAGE_SZ * PAGE_SZ
     HEAP_START += real_sz
 
     # XXX we ignore type and prot, and just give it read/write
     emu.mem_map(addr, real_sz, uc.UC_PROT_READ | uc.UC_PROT_WRITE)
 
-    print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x}")
     return addr
 
 def VirtualFree(emu):
@@ -238,6 +241,40 @@ def WriteFile(emu):
     if written:
         emu.mem_write(written, struct.pack("<I", sz))
     return 1
+
+def SetFilePointer(emu):
+    global last_error
+    hfile = get_stack_arg(emu, 0)
+    dist_lo = get_stack_arg(emu, 1)
+    pdist_hi = get_stack_arg(emu, 2)
+    method = get_stack_arg(emu, 3)
+
+    if hfile >> 2 >= len(hfile_table):
+        last_error = ERROR_INVALID_HANDLE
+        return 0
+    
+    ioio = hfile_table[hfile >> 2]
+
+    if pdist_hi:
+        dist_hi = struct.unpack("<I", emu.mem_read(pdist_hi, 4))[0]
+        dist_ = (dist_hi << 32) | dist_lo
+        if dist_ & 0x80000000_00000000:
+            dist = dist_ = 0x1_00000000_00000000
+        else:
+            dist = dist_
+    else:
+        if dist_lo & 0x80000000:
+            dist = dist_lo - 0x1_0000_0000
+        else:
+            dist = dist_lo
+    
+    print(f"SetFilePointer {ioio} disp {dist} method {method}")
+    ioio.seek(dist, method)
+    pos = ioio.tell()
+
+    if pdist_hi:
+        emu.mem_write(pdist_hi, struct.pack("<I", pos >> 32))
+    return pos & 0xffffffff
 
 def CloseHandle(emu):
     global last_error
@@ -372,7 +409,20 @@ def GetFileAttributesA(emu):
     p_fn = get_stack_arg(emu, 0)
     fn = get_c_str(emu, p_fn)
     print(f"GetFileAttributesA {fn}")
-    last_error = ERROR_FILE_NOT_FOUND
+
+    # HACK
+    if fn.startswith(b'Z:\\'):
+        return 0x80
+
+    try:
+        s = os.stat(fn)
+        if stat.S_ISDIR(s.st_mode):
+            return 0x10
+        else:
+            return 0x80
+    except FileNotFoundError:
+        last_error = ERROR_FILE_NOT_FOUND
+    last_error = ERROR_NOT_SUPPORTED
     return 0xffffffff
 
 
@@ -412,7 +462,17 @@ def DeleteFileA(emu):
     p_fn = get_stack_arg(emu, 0)
     fn = get_c_str(emu, p_fn)
     print(f"DeleteFileA {fn}")
+
+    # pretend to delete the file
     return 1
+
+    # try:
+    #     os.unlink(fn)
+    #     return 1
+    # except FileNotFoundError:
+    #     last_error = ERROR_FILE_NOT_FOUND
+    # last_error = ERROR_NOT_SUPPORTED
+    # return 0
 
 def GetVolumeInformationA(emu):
     lpRootPathName = get_stack_arg(emu, 0)
@@ -465,6 +525,65 @@ def FileTimeToDosDateTime(emu):
     emu.mem_write(outp_time, b'\x00\x00\x00\x00')
     return 1
 
+def GetCurrentDirectoryA(emu):
+    sz = get_stack_arg(emu, 0)
+    buf = get_stack_arg(emu, 1)
+
+    fake_cur_dir = b"Z:\\\x00"
+    sz = min(sz, len(fake_cur_dir))
+    emu.mem_write(buf, fake_cur_dir[:sz])
+    return len(fake_cur_dir)
+
+def GetFullPathNameA(emu):
+    inp = get_stack_arg(emu, 0)
+    inp = get_c_str(emu, inp)
+    bufsz = get_stack_arg(emu, 1)
+    buf = get_stack_arg(emu, 2)
+    p_fn = get_stack_arg(emu, 3)
+    print(f"GetFullPathNameA {inp} (UNIMPL!)")
+    return 0
+
+def CreateProcessA(emu):
+    lpApplicationName = get_stack_arg(emu, 0)
+    if lpApplicationName:
+        app_name = get_c_str(emu, lpApplicationName)
+    else:
+        app_name = ""
+    lpCommandLine = get_stack_arg(emu, 1)
+    if lpCommandLine:
+        cmdline = get_c_str(emu, lpCommandLine)
+    else:
+        cmdline = ""
+    lpProcessAttributes = get_stack_arg(emu, 2)
+    lpThreadAttributes = get_stack_arg(emu, 3)
+    bInheritHandles = get_stack_arg(emu, 4)
+    dwCreationFlags = get_stack_arg(emu, 5)
+    lpEnvironment = get_stack_arg(emu, 6)
+    lpCurrentDirectory = get_stack_arg(emu, 7)
+    lpStartupInfo = get_stack_arg(emu, 8)
+    lpProcessInformation = get_stack_arg(emu, 9)
+    print(f"CreateProcessA {app_name} {cmdline} (UNIMPL!)")
+    return 0
+
+def GetTimeZoneInformation(emu):
+    return 0xffffffff
+
+def GetPrivateProfileStringA(emu):
+    global last_error
+    lpAppName = get_stack_arg(emu, 0)
+    lpAppName = get_c_str(emu, lpAppName)
+    lpKeyName = get_stack_arg(emu, 1)
+    lpKeyName = get_c_str(emu, lpKeyName)
+    lpDefault = get_stack_arg(emu, 2)
+    lpDefault = get_c_str(emu, lpDefault)
+    out = get_stack_arg(emu, 3)
+    sz = get_stack_arg(emu, 4)
+    lpFileName = get_stack_arg(emu, 5)
+    lpFileName = get_c_str(emu, lpFileName)
+    print(f"GetPrivateProfileStringA {lpAppName} {lpKeyName} {lpDefault} {lpFileName}")
+    last_error = ERROR_FILE_NOT_FOUND
+    return 0
+
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
     (b'KERNEL32.DLL', b'GetProcAddress'): (GetProcAddress, 2),
@@ -477,6 +596,7 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetStdHandle'): (GetStdHandle, 1),
     (b'KERNEL32.DLL', b'ReadFile'): (ReadFile, 5),
     (b'KERNEL32.DLL', b'WriteFile'): (WriteFile, 5),
+    (b'KERNEL32.DLL', b'SetFilePointer'): (SetFilePointer, 4),
     (b'KERNEL32.DLL', b'CloseHandle'): (CloseHandle, 1),
     (b'KERNEL32.DLL', b'ExitProcess'): (ExitProcess, 1),
     (b'KERNEL32.DLL', b'SetHandleCount'): (SetHandleCount, 1),
@@ -495,6 +615,11 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetVolumeInformationA'): (GetVolumeInformationA, 8),
     (b'KERNEL32.DLL', b'FileTimeToLocalFileTime'): (FileTimeToLocalFileTime, 2),
     (b'KERNEL32.DLL', b'FileTimeToDosDateTime'): (FileTimeToDosDateTime, 3),
+    (b'KERNEL32.DLL', b'GetCurrentDirectoryA'): (GetCurrentDirectoryA, 2),
+    (b'KERNEL32.DLL', b'GetFullPathNameA'): (GetFullPathNameA, 4),
+    (b'KERNEL32.DLL', b'CreateProcessA'): (CreateProcessA, 10),
+    (b'KERNEL32.DLL', b'GetTimeZoneInformation'): (GetTimeZoneInformation, 1),
+    (b'KERNEL32.DLL', b'GetPrivateProfileStringA'): (GetPrivateProfileStringA, 6),
 }
 
 # load the headers
@@ -608,9 +733,11 @@ def hook_sysenter(emu, _user_data):
         emu_func = imports_table[eax]
         retaddr = get_stack_arg(emu, -1)
         if emu_func in EMU_TABLE:
+            if TRACE:
+                print(f"emulated call! {emu_func[0].decode('ascii', errors='replace')}!{emu_func[1].decode('ascii', errors='replace')}, called @ 0x{retaddr:08x}")
             ret = EMU_TABLE[emu_func][0](emu)
             if TRACE:
-                print(f"emulated call! {emu_func[0].decode('ascii', errors='replace')}!{emu_func[1].decode('ascii', errors='replace')}, called @ 0x{retaddr:08x}, ret = 0x{ret:08x}")
+                print(f"\tret = 0x{ret:08x}")
             emu.reg_write(ux.UC_X86_REG_EAX, ret)
         else:
             print(f"unhandled import! {emu_func[0].decode('ascii', errors='replace')}!{emu_func[1].decode('ascii', errors='replace')}, called @ 0x{retaddr:08x}")
