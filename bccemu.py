@@ -2,6 +2,7 @@
 
 import pefile
 import struct
+import sys
 import unicorn as uc
 import unicorn.x86_const as ux
 
@@ -11,6 +12,7 @@ import unicorn.x86_const as ux
 # 0x7C000000        import glue
 # 0x7C010000        TEB
 # 0x7C020000        GDT(?!)
+# 0x7C030000        environment and args
 
 PAGE_SZ = 64*1024
 
@@ -22,6 +24,7 @@ SYSCALL_EMU_SZ = PAGE_SZ
 
 TEB_ADDR = SYSCALL_EMU_ADDR + PAGE_SZ
 GDT_ADDR = TEB_ADDR + PAGE_SZ
+ENV_ARGS_ADDR = GDT_ADDR + PAGE_SZ
 
 FORCE_NO_JIT = True
 
@@ -31,6 +34,25 @@ pe = pefile.PE('BC5/BIN/BCC32.EXE')
 img_base = pe.OPTIONAL_HEADER.ImageBase
 img_sz = pe.OPTIONAL_HEADER.SizeOfImage
 print(f"Total 0x{img_sz:08x} bytes @ 0x{img_base:08x}")
+
+HEAP_START = (img_base + img_sz + PAGE_SZ - 1) // PAGE_SZ * PAGE_SZ
+print(f"Free memory starting at 0x{HEAP_START:08x}")
+
+emu = uc.Uc(uc.UC_ARCH_X86, uc.UC_MODE_32)
+emu.mem_map(img_base, img_sz, uc.UC_PROT_READ)
+
+# set up env, args
+env_args = b''
+env_ptr = ENV_ARGS_ADDR
+# env vars (TODO)
+env_args += b'\x00'
+args_ptr = ENV_ARGS_ADDR + len(env_args)
+# command line (TODO)
+env_args += "bcc32".encode()
+env_args += b'\x00'
+assert len(env_args) <= PAGE_SZ
+emu.mem_map(ENV_ARGS_ADDR, PAGE_SZ, uc.UC_PROT_READ | uc.UC_PROT_WRITE)
+emu.mem_write(ENV_ARGS_ADDR, env_args)
 
 # syscall emu
 def get_stack_arg(emu, n):
@@ -63,13 +85,147 @@ def GetProcAddress(emu):
     print(f"GetProcAddress 0x{module:08x}!{name.decode('ascii', errors='replace')}")
     return 0
 
+def GetEnvironmentStrings(emu):
+    return env_ptr
+
+def GetCommandLineA(emu):
+    return args_ptr
+
+def GetVersion(emu):
+    return 0x0105   # winxp (5.1)
+
+def GetModuleFileNameA(emu):
+    module = get_stack_arg(emu, 0)
+    out_fn = get_stack_arg(emu, 1)
+    out_sz = get_stack_arg(emu, 2)
+    if module == 0:
+        # todo
+        filename = b"C:\\BC5\\BIN\\BCC32.EXE\x00"
+        sz = min(out_sz, len(filename))
+        print(f"GetModuleFileNameA write to 0x{out_fn:08x} sz 0x{sz:x} orig_sz 0x{out_sz:x}")
+        emu.mem_write(out_fn, filename[:sz])
+        return len(filename) - 1
+    return 0
+
+MEM_COMMIT = 0x1000
+MEM_RESERVE = 0x2000
+def VirtualAlloc(emu):
+    global HEAP_START
+    addr = get_stack_arg(emu, 0)
+    sz = get_stack_arg(emu, 1)
+    ty = get_stack_arg(emu, 2)
+    prot = get_stack_arg(emu, 3)
+
+    if (ty & MEM_COMMIT) and not (ty & MEM_RESERVE):
+        print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x} (COMMIT)")
+        return addr
+
+    if addr:
+        return 0
+
+    addr = HEAP_START
+    real_sz = (sz + PAGE_SZ - 1) // PAGE_SZ * PAGE_SZ
+    HEAP_START += real_sz
+
+    # XXX we ignore type and prot, and just give it read/write
+    emu.mem_map(addr, real_sz, uc.UC_PROT_READ | uc.UC_PROT_WRITE)
+
+    print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x}")
+    return addr
+
+def VirtualFree(emu):
+    addr = get_stack_arg(emu, 0)
+    sz = get_stack_arg(emu, 1)
+    ty = get_stack_arg(emu, 2)
+    print(f"VirtualFree @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x}")
+    return 1
+
+def GetStdHandle(emu):
+    std_handle = get_stack_arg(emu, 0)
+    print(f"GetStdHandle {std_handle:08x}")
+    if std_handle == 0xfffffff6:
+        # stdin
+        return 0 << 2
+    if std_handle == 0xfffffff5:
+        # stdout
+        return 1 << 2
+    if std_handle == 0xfffffff4:
+        # stderr
+        return 2 << 2
+    return 0xffffffff
+
+def WriteFile(emu):
+    hfile = get_stack_arg(emu, 0)
+    buffer = get_stack_arg(emu, 1)
+    sz = get_stack_arg(emu, 2)
+    written = get_stack_arg(emu, 3)
+    overlapped = get_stack_arg(emu, 4)
+
+    buf = emu.mem_read(buffer, sz)
+
+    if overlapped:
+        return 0
+
+    if hfile >> 2 == 1:
+        # stdout
+        sys.stdout.buffer.write(buf)
+    elif hfile >> 2 == 2:
+        # stderr
+        sys.stderr.buffer.write(buf)
+
+    if written:
+        emu.mem_write(written, struct.pack("<I", sz))
+    return 1
+
+def ExitProcess(emu):
+    code = get_stack_arg(emu, 0)
+    print(f"Process executed with status: {code}")
+    emu.mem_write(emu.reg_read(ux.UC_X86_REG_ESP), b'\xff\xff\xff\xff')
+    return 0
+
+def SetHandleCount(emu):
+    return get_stack_arg(emu, 0)
+
+def GetStartupInfoA(emu):
+    info = get_stack_arg(emu, 0)
+    emu.mem_write(info, struct.pack("<IIIIIIIIIIIIHHIIII", 17*4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    return 0
+
+def GetFileType(emu):
+    hfile = get_stack_arg(emu, 0)
+
+    if hfile >> 2 == 0:
+        # stdin
+        ioio = sys.stdin
+    elif hfile >> 2 == 1:
+        # stdout
+        ioio = sys.stdout
+    elif hfile >> 2 == 2:
+        # stderr
+        ioio = sys.stderr
+
+    if ioio.isatty():
+        return 2
+    if not ioio.seekable():
+        return 3
+    return 1
+
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
     (b'KERNEL32.DLL', b'GetProcAddress'): (GetProcAddress, 2),
+    (b'KERNEL32.DLL', b'GetEnvironmentStrings'): (GetEnvironmentStrings, 0),
+    (b'KERNEL32.DLL', b'GetCommandLineA'): (GetCommandLineA, 0),
+    (b'KERNEL32.DLL', b'GetVersion'): (GetVersion, 0),
+    (b'KERNEL32.DLL', b'GetModuleFileNameA'): (GetModuleFileNameA, 3),
+    (b'KERNEL32.DLL', b'VirtualAlloc'): (VirtualAlloc, 4),
+    (b'KERNEL32.DLL', b'VirtualFree'): (VirtualFree, 3),
+    (b'KERNEL32.DLL', b'GetStdHandle'): (GetStdHandle, 4),
+    (b'KERNEL32.DLL', b'WriteFile'): (WriteFile, 5),
+    (b'KERNEL32.DLL', b'ExitProcess'): (ExitProcess, 1),
+    (b'KERNEL32.DLL', b'SetHandleCount'): (SetHandleCount, 1),
+    (b'KERNEL32.DLL', b'GetStartupInfoA'): (GetStartupInfoA, 1),
+    (b'KERNEL32.DLL', b'GetFileType'): (GetFileType, 1),
 }
-
-emu = uc.Uc(uc.UC_ARCH_X86, uc.UC_MODE_32)
-emu.mem_map(img_base, img_sz, uc.UC_PROT_READ)
 
 # load the headers
 print(f"Loading 0x{len(pe.header):08x} bytes @ 0x{img_base:08x} (header)")
