@@ -53,7 +53,7 @@ env_ptr = ENV_ARGS_ADDR
 env_args += b'\x00'
 args_ptr = ENV_ARGS_ADDR + len(env_args)
 # command line (TODO)
-env_args += "bcc32".encode()
+env_args += "tlink32".encode()
 for arg in sys.argv[1:]:
     env_args += (" " + arg).encode()
 env_args += b'\x00'
@@ -130,7 +130,7 @@ def GetModuleFileNameA(emu):
     out_sz = get_stack_arg(emu, 2)
     if module == 0:
         # todo
-        filename = b"C:\\BC5\\BIN\\BCC32.EXE\x00"
+        filename = b"C:\\BC5\\BIN\\TLINK32.EXE\x00"
         sz = min(out_sz, len(filename))
         print(f"GetModuleFileNameA write to 0x{out_fn:08x} sz 0x{sz:x} orig_sz 0x{out_sz:x}")
         emu.mem_write(out_fn, filename[:sz])
@@ -581,8 +581,11 @@ def GetPrivateProfileStringA(emu):
     lpFileName = get_stack_arg(emu, 5)
     lpFileName = get_c_str(emu, lpFileName)
     print(f"GetPrivateProfileStringA {lpAppName} {lpKeyName} {lpDefault} {lpFileName}")
+    real_sz = min(sz - 1, len(lpDefault))
+    emu.mem_write(out, lpDefault[:real_sz])
+    emu.mem_write(out + real_sz, b'\x00')
     last_error = ERROR_FILE_NOT_FOUND
-    return 0
+    return real_sz
 
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
