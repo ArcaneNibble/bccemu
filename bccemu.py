@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import datetime
 import pefile
 import struct
 import sys
@@ -27,6 +28,7 @@ GDT_ADDR = TEB_ADDR + PAGE_SZ
 ENV_ARGS_ADDR = GDT_ADDR + PAGE_SZ
 
 FORCE_NO_JIT = True
+TRACE = False
 
 # load the PE
 pe = pefile.PE('BC5/BIN/BCC32.EXE')
@@ -49,10 +51,13 @@ env_args += b'\x00'
 args_ptr = ENV_ARGS_ADDR + len(env_args)
 # command line (TODO)
 env_args += "bcc32".encode()
+for arg in sys.argv[1:]:
+    env_args += (" " + arg).encode()
 env_args += b'\x00'
 assert len(env_args) <= PAGE_SZ
 emu.mem_map(ENV_ARGS_ADDR, PAGE_SZ, uc.UC_PROT_READ | uc.UC_PROT_WRITE)
 emu.mem_write(ENV_ARGS_ADDR, env_args)
+print(f"Args block: {env_args}")
 
 # syscall emu
 def get_stack_arg(emu, n):
@@ -116,7 +121,7 @@ def VirtualAlloc(emu):
     ty = get_stack_arg(emu, 2)
     prot = get_stack_arg(emu, 3)
 
-    if (ty & MEM_COMMIT) and not (ty & MEM_RESERVE):
+    if (ty & MEM_COMMIT) and not (ty & MEM_RESERVE) and addr:
         print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x} (COMMIT)")
         return addr
 
@@ -213,8 +218,24 @@ def GetFileType(emu):
 def SetConsoleCtrlHandler(emu):
     fn = get_stack_arg(emu, 0)
     add = get_stack_arg(emu, 1)
-    print(f"SetConsoleCtrlHandler {"add" if add else "del"} @ {fn:08x} (DUMMY)")
+    print(f"SetConsoleCtrlHandler {"add" if add else "del"} @ 0x{fn:08x} (DUMMY)")
     return 1
+
+def GetLocalTime(emu):
+    dt = datetime.datetime.now()
+    info = get_stack_arg(emu, 0)
+    emu.mem_write(info, struct.pack("<HHHHHHHH", dt.year, dt.month, (dt.weekday() + 1) % 7, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond // 1000))
+    return 0
+
+def GetSystemInfo(emu):
+    dt = datetime.datetime.now()
+    info = get_stack_arg(emu, 0)
+    emu.mem_write(info, struct.pack("<HHIIIIIIIHH", 0, 0, PAGE_SZ, 0, 0xffffffff, 1, 1, 586, PAGE_SZ, 6, 0))
+    return 0
+
+def GetLastError(emu):
+    # TODO
+    return 0
 
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
@@ -232,6 +253,9 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetStartupInfoA'): (GetStartupInfoA, 1),
     (b'KERNEL32.DLL', b'GetFileType'): (GetFileType, 1),
     (b'KERNEL32.DLL', b'SetConsoleCtrlHandler'): (SetConsoleCtrlHandler, 2),
+    (b'KERNEL32.DLL', b'GetLocalTime'): (GetLocalTime, 1),
+    (b'KERNEL32.DLL', b'GetSystemInfo'): (GetSystemInfo, 1),
+    (b'KERNEL32.DLL', b'GetLastError'): (GetLastError, 0),
 }
 
 # load the headers
@@ -269,10 +293,12 @@ for imp_dir_ent in pe.DIRECTORY_ENTRY_IMPORT:
 syscall_emu_mem = b''
 for (i, (dll, fn)) in enumerate(imports_table):
     retn = 0
+    bad = "(BAD!)"
     if (dll, fn) in EMU_TABLE:
         retn = EMU_TABLE[(dll, fn)][1]
+        bad = ""
 
-    print(f"Emulated function #{i} = {dll.decode('ascii', errors='replace')}!{fn.decode('ascii', errors='replace')}")
+    print(f"Emulated function #{i} = {dll.decode('ascii', errors='replace')}!{fn.decode('ascii', errors='replace')} {bad}")
     syscall_emu_mem += struct.pack("<BIBBBH", 0xb8, i, 0x0f, 0x34, 0xc2, retn*4)    # mov eax, imm32    sysenter   retn imm16
 assert len(syscall_emu_mem) <= SYSCALL_EMU_SZ
 emu.mem_map(SYSCALL_EMU_ADDR, SYSCALL_EMU_SZ, uc.UC_PROT_READ | uc.UC_PROT_EXEC)
@@ -344,7 +370,8 @@ def hook_sysenter(emu, _user_data):
         retaddr = get_stack_arg(emu, -1)
         if emu_func in EMU_TABLE:
             ret = EMU_TABLE[emu_func][0](emu)
-            print(f"emulated call! {emu_func[0].decode('ascii', errors='replace')}!{emu_func[1].decode('ascii', errors='replace')}, called @ 0x{retaddr:08x}, ret = 0x{ret:08x}")
+            if TRACE:
+                print(f"emulated call! {emu_func[0].decode('ascii', errors='replace')}!{emu_func[1].decode('ascii', errors='replace')}, called @ 0x{retaddr:08x}, ret = 0x{ret:08x}")
             emu.reg_write(ux.UC_X86_REG_EAX, ret)
         else:
             print(f"unhandled import! {emu_func[0].decode('ascii', errors='replace')}!{emu_func[1].decode('ascii', errors='replace')}, called @ 0x{retaddr:08x}")
