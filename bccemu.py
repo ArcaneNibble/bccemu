@@ -60,6 +60,14 @@ emu.mem_write(ENV_ARGS_ADDR, env_args)
 print(f"Args block: {env_args}")
 
 # syscall emu
+last_error = 0
+ERROR_FILE_NOT_FOUND = 2
+ERROR_INVALID_HANDLE = 6
+ERROR_NOT_SUPPORTED = 50
+ERROR_MOD_NOT_FOUND = 126
+ERROR_PROC_NOT_FOUND = 127
+ERROR_INVALID_ADDRESS = 487
+
 def get_stack_arg(emu, n):
     esp = emu.reg_read(ux.UC_X86_REG_ESP)
     return struct.unpack("<I", emu.mem_read(esp + (n+1) * 4, 4))[0]
@@ -74,20 +82,24 @@ def get_c_str(emu, addr):
         addr += 1
 
 def GetModuleHandleA(emu):
+    global last_error
     module_name = get_stack_arg(emu, 0)
     if module_name == 0:
         ret = img_base
     else:
         module_name = get_c_str(emu, module_name)
         print(f"GetModuleHandleA {module_name.decode('ascii', errors='replace')}")
+        last_error = ERROR_MOD_NOT_FOUND
         ret = 0
     return ret
 
 def GetProcAddress(emu):
+    global last_error
     module = get_stack_arg(emu, 0)
     p_name = get_stack_arg(emu, 1)
     name = get_c_str(emu, p_name)
-    print(f"GetProcAddress 0x{module:08x}!{name.decode('ascii', errors='replace')}")
+    print(f"GetProcAddress 0x{module:08x}!{name.decode('ascii', errors='replace')} (DUMMY)")
+    last_error = ERROR_PROC_NOT_FOUND
     return 0
 
 def GetEnvironmentStrings(emu):
@@ -100,6 +112,7 @@ def GetVersion(emu):
     return 0x0105   # winxp (5.1)
 
 def GetModuleFileNameA(emu):
+    global last_error
     module = get_stack_arg(emu, 0)
     out_fn = get_stack_arg(emu, 1)
     out_sz = get_stack_arg(emu, 2)
@@ -110,12 +123,14 @@ def GetModuleFileNameA(emu):
         print(f"GetModuleFileNameA write to 0x{out_fn:08x} sz 0x{sz:x} orig_sz 0x{out_sz:x}")
         emu.mem_write(out_fn, filename[:sz])
         return len(filename) - 1
+    last_error = ERROR_MOD_NOT_FOUND
     return 0
 
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
 def VirtualAlloc(emu):
     global HEAP_START
+    global last_error
     addr = get_stack_arg(emu, 0)
     sz = get_stack_arg(emu, 1)
     ty = get_stack_arg(emu, 2)
@@ -126,6 +141,7 @@ def VirtualAlloc(emu):
         return addr
 
     if addr:
+        last_error = ERROR_INVALID_ADDRESS
         return 0
 
     addr = HEAP_START
@@ -142,10 +158,11 @@ def VirtualFree(emu):
     addr = get_stack_arg(emu, 0)
     sz = get_stack_arg(emu, 1)
     ty = get_stack_arg(emu, 2)
-    print(f"VirtualFree @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x}")
+    print(f"VirtualFree @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} (DUMMY)")
     return 1
 
 def GetStdHandle(emu):
+    global last_error
     std_handle = get_stack_arg(emu, 0)
     print(f"GetStdHandle {std_handle:08x}")
     if std_handle == 0xfffffff6:
@@ -157,9 +174,11 @@ def GetStdHandle(emu):
     if std_handle == 0xfffffff4:
         # stderr
         return 2 << 2
+    last_error = ERROR_INVALID_HANDLE
     return 0xffffffff
 
 def WriteFile(emu):
+    global last_error
     hfile = get_stack_arg(emu, 0)
     buffer = get_stack_arg(emu, 1)
     sz = get_stack_arg(emu, 2)
@@ -169,14 +188,20 @@ def WriteFile(emu):
     buf = emu.mem_read(buffer, sz)
 
     if overlapped:
+        last_error = ERROR_NOT_SUPPORTED
         return 0
 
-    if hfile >> 2 == 1:
+    if hfile >> 2 == 0:
+        # stdin
+        ioio = sys.stdin.buffer
+    elif hfile >> 2 == 1:
         # stdout
-        sys.stdout.buffer.write(buf)
+        ioio = sys.stdout.buffer
     elif hfile >> 2 == 2:
         # stderr
-        sys.stderr.buffer.write(buf)
+        ioio = sys.stderr.buffer
+
+    ioio.write(buf)
 
     if written:
         emu.mem_write(written, struct.pack("<I", sz))
@@ -234,8 +259,75 @@ def GetSystemInfo(emu):
     return 0
 
 def GetLastError(emu):
-    # TODO
-    return 0
+    return last_error
+
+def FindFirstFileA(emu):
+    global last_error
+    p_fn = get_stack_arg(emu, 0)
+    fn = get_c_str(emu, p_fn)
+    out = get_stack_arg(emu, 1)
+    print(f"FindFirstFileA {fn}")
+    last_error = ERROR_FILE_NOT_FOUND
+    return 0xffffffff
+
+def GetFileAttributesA(emu):
+    global last_error
+    p_fn = get_stack_arg(emu, 0)
+    fn = get_c_str(emu, p_fn)
+    print(f"GetFileAttributesA {fn}")
+    last_error = ERROR_FILE_NOT_FOUND
+    return 0xffffffff
+
+def CreateFileA(emu):
+    global last_error
+    p_fn = get_stack_arg(emu, 0)
+    fn = get_c_str(emu, p_fn)
+    dwDesiredAccess = get_stack_arg(emu, 1)
+    dwShareMode = get_stack_arg(emu, 2)
+    lpSecurityAttributes = get_stack_arg(emu, 3)
+    dwCreationDisposition = get_stack_arg(emu, 4)
+    dwFlagsAndAttributes = get_stack_arg(emu, 5)
+    hTemplateFile = get_stack_arg(emu, 6)
+    print(f"CreateFileA {fn}")
+    last_error = ERROR_FILE_NOT_FOUND
+    return 0xffffffff
+
+def GetVolumeInformationA(emu):
+    lpRootPathName = get_stack_arg(emu, 0)
+    lpVolumeNameBuffer = get_stack_arg(emu, 1)
+    nVolumeNameSize = get_stack_arg(emu, 2)
+    lpVolumeSerialNumber = get_stack_arg(emu, 3)
+    lpMaximumComponentLength = get_stack_arg(emu, 4)
+    lpFileSystemFlags = get_stack_arg(emu, 5)
+    lpFileSystemNameBuffer = get_stack_arg(emu, 6)
+    nFileSystemNameSize = get_stack_arg(emu, 7)
+
+    if lpRootPathName:
+        lpRootPathName = get_c_str(emu, lpRootPathName)
+        print(f"GetVolumeInformationA {lpRootPathName} (UNIMPL!)")
+        return 0
+
+    if lpVolumeNameBuffer:
+        volname = b"Emulation\x00"
+        sz = min(nVolumeNameSize, len(volname))
+        print(f"GetVolumeInformationA retrieving name")
+        emu.mem_write(lpVolumeNameBuffer, volname[:sz])
+    if lpVolumeSerialNumber:
+        print(f"GetVolumeInformationA retrieving serial")
+        emu.mem_write(lpVolumeSerialNumber, b'\xde\xad\xbe\xef')
+    if lpMaximumComponentLength:
+        print(f"GetVolumeInformationA retrieving max path component")
+        emu.mem_write(lpMaximumComponentLength, struct.pack("<I", 255))
+    if lpFileSystemFlags:
+        print(f"GetVolumeInformationA retrieving flags")
+        emu.mem_write(lpFileSystemFlags, struct.pack("<I", 0x6))
+    if lpFileSystemNameBuffer:
+        fsname = b"EMU\x00"
+        sz = min(nFileSystemNameSize, len(fsname))
+        print(f"GetVolumeInformationA retrieving fs")
+        emu.mem_write(lpFileSystemNameBuffer, fsname[:sz])
+
+    return 1
 
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
@@ -256,6 +348,10 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetLocalTime'): (GetLocalTime, 1),
     (b'KERNEL32.DLL', b'GetSystemInfo'): (GetSystemInfo, 1),
     (b'KERNEL32.DLL', b'GetLastError'): (GetLastError, 0),
+    (b'KERNEL32.DLL', b'FindFirstFileA'): (FindFirstFileA, 2),
+    (b'KERNEL32.DLL', b'GetFileAttributesA'): (GetFileAttributesA, 1),
+    (b'KERNEL32.DLL', b'CreateFileA'): (CreateFileA, 7),
+    (b'KERNEL32.DLL', b'GetVolumeInformationA'): (GetVolumeInformationA, 8),
 }
 
 # load the headers
