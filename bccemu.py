@@ -68,10 +68,16 @@ ERROR_FILE_NOT_FOUND = 2
 ERROR_INVALID_HANDLE = 6
 ERROR_NO_MORE_FILES = 18
 ERROR_NOT_SUPPORTED = 50
+ERROR_INVALID_PARAMETER = 87
 ERROR_MOD_NOT_FOUND = 126
 ERROR_PROC_NOT_FOUND = 127
 ERROR_INVALID_ADDRESS = 487
 
+hfile_table = [
+    sys.stdin.buffer,
+    sys.stdout.buffer,
+    sys.stderr.buffer,
+]
 hfind_table = []
 
 def get_stack_arg(emu, n):
@@ -183,6 +189,31 @@ def GetStdHandle(emu):
     last_error = ERROR_INVALID_HANDLE
     return 0xffffffff
 
+def ReadFile(emu):
+    global last_error
+    hfile = get_stack_arg(emu, 0)
+    buffer = get_stack_arg(emu, 1)
+    sz = get_stack_arg(emu, 2)
+    read = get_stack_arg(emu, 3)
+    overlapped = get_stack_arg(emu, 4)
+
+    if overlapped:
+        last_error = ERROR_NOT_SUPPORTED
+        return 0
+
+    if hfile >> 2 >= len(hfile_table):
+        last_error = ERROR_INVALID_HANDLE
+        return 0
+
+    ioio = hfile_table[hfile >> 2]
+    buf = ioio.read(sz)
+
+    emu.mem_write(buffer, buf)
+
+    if read:
+        emu.mem_write(read, struct.pack("<I", len(buf)))
+    return 1
+
 def WriteFile(emu):
     global last_error
     hfile = get_stack_arg(emu, 0)
@@ -197,20 +228,27 @@ def WriteFile(emu):
         last_error = ERROR_NOT_SUPPORTED
         return 0
 
-    if hfile >> 2 == 0:
-        # stdin
-        ioio = sys.stdin.buffer
-    elif hfile >> 2 == 1:
-        # stdout
-        ioio = sys.stdout.buffer
-    elif hfile >> 2 == 2:
-        # stderr
-        ioio = sys.stderr.buffer
+    if hfile >> 2 >= len(hfile_table):
+        last_error = ERROR_INVALID_HANDLE
+        return 0
 
+    ioio = hfile_table[hfile >> 2]
     ioio.write(buf)
 
     if written:
         emu.mem_write(written, struct.pack("<I", sz))
+    return 1
+
+def CloseHandle(emu):
+    global last_error
+    hfile = get_stack_arg(emu, 0)
+
+    if hfile >> 2 >= len(hfile_table):
+        last_error = ERROR_INVALID_HANDLE
+        return 0
+
+    if hfile >> 2 >= 2:
+        hfile_table[hfile >> 2].close()
     return 1
 
 def ExitProcess(emu):
@@ -230,15 +268,11 @@ def GetStartupInfoA(emu):
 def GetFileType(emu):
     hfile = get_stack_arg(emu, 0)
 
-    if hfile >> 2 == 0:
-        # stdin
-        ioio = sys.stdin
-    elif hfile >> 2 == 1:
-        # stdout
-        ioio = sys.stdout
-    elif hfile >> 2 == 2:
-        # stderr
-        ioio = sys.stderr
+    if hfile >> 2 >= len(hfile_table):
+        last_error = ERROR_INVALID_HANDLE
+        return 0
+    
+    ioio = hfile_table[hfile >> 2]
 
     if ioio.isatty():
         return 2
@@ -279,13 +313,13 @@ def fn_to_find_data(fn):
     # XXX skip timestamps
     ret += b'\x00\x00\x00\x00\x00\x00\x00\x00' * 3
     ret += struct.pack("<IIII", s.st_size >> 32, s.st_size & 0xffffffff, 0, 0)
-    ret += fn.encode(errors='surrogateescape') + b'\x00'
+    ret += fn + b'\x00'
     return ret
 
 def FindFirstFileA(emu):
     global last_error
     p_fn = get_stack_arg(emu, 0)
-    fn = get_c_str(emu, p_fn).decode(errors='surrogateescape')
+    fn = get_c_str(emu, p_fn)
     out = get_stack_arg(emu, 1)
     print(f"FindFirstFileA {fn}")
 
@@ -341,6 +375,7 @@ def GetFileAttributesA(emu):
     last_error = ERROR_FILE_NOT_FOUND
     return 0xffffffff
 
+
 def CreateFileA(emu):
     global last_error
     p_fn = get_stack_arg(emu, 0)
@@ -351,9 +386,33 @@ def CreateFileA(emu):
     dwCreationDisposition = get_stack_arg(emu, 4)
     dwFlagsAndAttributes = get_stack_arg(emu, 5)
     hTemplateFile = get_stack_arg(emu, 6)
-    print(f"CreateFileA {fn}")
-    last_error = ERROR_FILE_NOT_FOUND
-    return 0xffffffff
+    print(f"CreateFileA {fn} {dwCreationDisposition}")
+
+    # not very accurate emulation lol
+    if dwCreationDisposition == 1 or dwCreationDisposition == 2 or dwCreationDisposition == 5:
+        mode = 'w+b'
+    elif dwCreationDisposition == 3 or dwCreationDisposition == 4:
+        mode = 'r+b'
+    else:
+        last_error = ERROR_INVALID_PARAMETER
+        return 0xffffffff
+    
+    try:
+        ioio = open(fn, mode)
+    except FileNotFoundError:
+        last_error = ERROR_FILE_NOT_FOUND
+        return 0xffffffff
+    
+    hfile = len(hfile_table) << 2
+    hfile_table.append(ioio)
+    return hfile
+
+def DeleteFileA(emu):
+    global last_error
+    p_fn = get_stack_arg(emu, 0)
+    fn = get_c_str(emu, p_fn)
+    print(f"DeleteFileA {fn}")
+    return 1
 
 def GetVolumeInformationA(emu):
     lpRootPathName = get_stack_arg(emu, 0)
@@ -416,7 +475,9 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'VirtualAlloc'): (VirtualAlloc, 4),
     (b'KERNEL32.DLL', b'VirtualFree'): (VirtualFree, 3),
     (b'KERNEL32.DLL', b'GetStdHandle'): (GetStdHandle, 1),
+    (b'KERNEL32.DLL', b'ReadFile'): (ReadFile, 5),
     (b'KERNEL32.DLL', b'WriteFile'): (WriteFile, 5),
+    (b'KERNEL32.DLL', b'CloseHandle'): (CloseHandle, 1),
     (b'KERNEL32.DLL', b'ExitProcess'): (ExitProcess, 1),
     (b'KERNEL32.DLL', b'SetHandleCount'): (SetHandleCount, 1),
     (b'KERNEL32.DLL', b'GetStartupInfoA'): (GetStartupInfoA, 1),
@@ -430,6 +491,7 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'FindClose'): (FindClose, 1),
     (b'KERNEL32.DLL', b'GetFileAttributesA'): (GetFileAttributesA, 1),
     (b'KERNEL32.DLL', b'CreateFileA'): (CreateFileA, 7),
+    (b'KERNEL32.DLL', b'DeleteFileA'): (DeleteFileA, 1),
     (b'KERNEL32.DLL', b'GetVolumeInformationA'): (GetVolumeInformationA, 8),
     (b'KERNEL32.DLL', b'FileTimeToLocalFileTime'): (FileTimeToLocalFileTime, 2),
     (b'KERNEL32.DLL', b'FileTimeToDosDateTime'): (FileTimeToDosDateTime, 3),
