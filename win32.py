@@ -19,6 +19,7 @@ PAGE_SZ = 64*1024
 ERROR_FILE_NOT_FOUND = 2
 ERROR_INVALID_HANDLE = 6
 ERROR_NO_MORE_FILES = 18
+ERROR_HANDLE_EOF = 38
 ERROR_NOT_SUPPORTED = 50
 ERROR_FILE_EXISTS = 80
 ERROR_INVALID_PARAMETER = 87
@@ -152,6 +153,8 @@ class Win32Emu:
             ((b'KERNEL32.DLL', b'GetConsoleMode'), self.GetConsoleMode, 2),
             ((b'KERNEL32.DLL', b'LoadLibraryA'), self.LoadLibraryA, 1),
             ((b'KERNEL32.DLL', b'FreeLibrary'), self.FreeLibrary, 1),
+            ((b'KERNEL32.DLL', b'GetACP'), self.GetACP, 0),
+            ((b'KERNEL32.DLL', b'IsDBCSLeadByteEx'), self.IsDBCSLeadByteEx, 2),
         ]
         self._emu_table_map = {}
         for (i, (key, _fn, _nargs)) in enumerate(self._emu_table):
@@ -344,6 +347,8 @@ class Win32Emu:
         if ioio is None:
             self._last_error = ERROR_INVALID_HANDLE
             return 0
+        if TRACE:
+            print(f"ReadFile {ioio}")
 
         buf = ioio.read(sz)
 
@@ -351,7 +356,12 @@ class Win32Emu:
 
         if read:
             emu.mem_write(read, struct.pack("<I", len(buf)))
-        return 1
+
+        if len(buf) == sz:
+            return 1
+        else:
+            self._last_error = ERROR_HANDLE_EOF
+            return 0
 
     def WriteFile(self, emu):
         hfile = get_stack_arg(emu, 0)
@@ -374,6 +384,8 @@ class Win32Emu:
         if ioio is None:
             self._last_error = ERROR_INVALID_HANDLE
             return 0
+        if TRACE:
+            print(f"WriteFile {ioio}")
 
         ioio.write(buf)
 
@@ -813,3 +825,10 @@ class Win32Emu:
         return 0
     def FreeLibrary(self, emu):
         return 0
+
+    def GetACP(self, emu):
+        return 65001
+    def IsDBCSLeadByteEx(self, emu):
+        codepage = get_stack_arg(emu, 0)
+        char = get_stack_arg(emu, 1)
+        return (char & 0xff) <= 0x7f
