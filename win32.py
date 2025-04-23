@@ -12,7 +12,7 @@ import unicorn.x86_const as ux
 
 DIR_FOR_THIS_SCRIPT = bytes(pathlib.Path(__file__).parent.resolve())
 
-TRACE = True
+TRACE = False
 
 PAGE_SZ = 64*1024
 
@@ -67,7 +67,7 @@ def mangle_path(path_in):
     if path.upper().startswith(b'Z:/'):
         path = b'.' + path[2:]
     elif path.upper().startswith(b'C:/'):
-        path = DIR_FOR_THIS_SCRIPT + path[2:]
+        path = DIR_FOR_THIS_SCRIPT + path[2:].upper()
     if TRACE:
         print(f"mangle: {path_in} -> {path}")
     return path
@@ -531,6 +531,8 @@ class Win32Emu:
 
         if TRACE:
             print(f"FindFirstFileA {fn}")
+
+        fn = mangle_path(fn)
 
         files = glob.glob(fn)
         if len(files) == 0:
