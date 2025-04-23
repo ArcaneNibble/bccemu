@@ -137,6 +137,8 @@ class Win32Emu:
             ((b'KERNEL32.DLL', b'GetCurrentProcessId'), self.GetCurrentProcessId, 0),
             ((b'KERNEL32.DLL', b'GetCurrentThreadId'), self.GetCurrentThreadId, 0),
             ((b'KERNEL32.DLL', b'GetConsoleMode'), self.GetConsoleMode, 2),
+            ((b'KERNEL32.DLL', b'LoadLibraryA'), self.LoadLibraryA, 1),
+            ((b'KERNEL32.DLL', b'FreeLibrary'), self.FreeLibrary, 1),
         ]
         self._emu_table_map = {}
         for (i, (key, _fn, _nargs)) in enumerate(self._emu_table):
@@ -757,4 +759,14 @@ class Win32Emu:
         return 1
 
     def GetConsoleMode(self, emu):
+        return 0
+
+    def LoadLibraryA(self, emu):
+        lib = get_stack_arg(emu, 0)
+        lib = get_c_str(emu, lib)
+        print(f"LoadLibraryA {lib} (UNIMPL!)")
+
+        self._last_error = ERROR_FILE_NOT_FOUND
+        return 0
+    def FreeLibrary(self, emu):
         return 0
