@@ -34,7 +34,7 @@ FORCE_NO_JIT = True
 TRACE = False
 
 # load the PE
-pe = pefile.PE('BC5/BIN/TLINK32.EXE')
+pe = pefile.PE('BC5/BIN/BRC32.EXE')
 
 img_base = pe.OPTIONAL_HEADER.ImageBase
 img_sz = pe.OPTIONAL_HEADER.SizeOfImage
@@ -53,7 +53,7 @@ env_ptr = ENV_ARGS_ADDR
 env_args += b'\x00'
 args_ptr = ENV_ARGS_ADDR + len(env_args)
 # command line (TODO)
-env_args += "tlink32".encode()
+env_args += "BRC32".encode()
 for arg in sys.argv[1:]:
     env_args += (" " + arg).encode()
 env_args += b'\x00'
@@ -101,6 +101,10 @@ def GetModuleHandleA(emu):
     else:
         module_name = get_c_str(emu, module_name)
         print(f"GetModuleHandleA {module_name.decode('ascii', errors='replace')}")
+
+        if module_name.upper() == b'KERNEL32.DLL':
+            return SYSCALL_EMU_ADDR
+
         last_error = ERROR_MOD_NOT_FOUND
         ret = 0
     return ret
@@ -111,6 +115,14 @@ def GetProcAddress(emu):
     p_name = get_stack_arg(emu, 1)
     name = get_c_str(emu, p_name)
     print(f"GetProcAddress 0x{module:08x}!{name.decode('ascii', errors='replace')} (DUMMY)")
+
+    if module == SYSCALL_EMU_ADDR:
+        try:
+            idx = imports_table.index((b'KERNEL32.DLL', name))
+            return SYSCALL_EMU_ADDR + idx*10
+        except ValueError:
+            pass
+
     last_error = ERROR_PROC_NOT_FOUND
     return 0
 
@@ -130,7 +142,7 @@ def GetModuleFileNameA(emu):
     out_sz = get_stack_arg(emu, 2)
     if module == 0:
         # todo
-        filename = b"C:\\BC5\\BIN\\TLINK32.EXE\x00"
+        filename = b"C:\\BC5\\BIN\\BRC32.EXE\x00"
         sz = min(out_sz, len(filename))
         print(f"GetModuleFileNameA write to 0x{out_fn:08x} sz 0x{sz:x} orig_sz 0x{out_sz:x}")
         emu.mem_write(out_fn, filename[:sz])
@@ -446,7 +458,7 @@ def CreateFileA(emu):
     else:
         last_error = ERROR_INVALID_PARAMETER
         return 0xffffffff
-    
+
     try:
         ioio = open(fn, mode)
     except FileNotFoundError:
@@ -587,6 +599,11 @@ def GetPrivateProfileStringA(emu):
     last_error = ERROR_FILE_NOT_FOUND
     return real_sz
 
+def GlobalMemoryStatus(emu):
+    info = get_stack_arg(emu, 0)
+    emu.mem_write(info, struct.pack("<IIIIIIII", 8*4, 0, 0x80000000, 0x80000000, 0, 0, 0x80000000, 0x80000000))
+    return 0
+
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
     (b'KERNEL32.DLL', b'GetProcAddress'): (GetProcAddress, 2),
@@ -623,6 +640,7 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'CreateProcessA'): (CreateProcessA, 10),
     (b'KERNEL32.DLL', b'GetTimeZoneInformation'): (GetTimeZoneInformation, 1),
     (b'KERNEL32.DLL', b'GetPrivateProfileStringA'): (GetPrivateProfileStringA, 6),
+    (b'KERNEL32.DLL', b'GlobalMemoryStatus'): (GlobalMemoryStatus, 1),
 }
 
 # load the headers
@@ -656,7 +674,7 @@ for imp_dir_ent in pe.DIRECTORY_ENTRY_IMPORT:
     # print(imp_dir_ent.dll)
     for imp_ent in imp_dir_ent.imports:
         # print(imp_ent.name, hex(imp_ent.address))
-        imports_table.append((imp_dir_ent.dll, imp_ent.name))
+        imports_table.append((imp_dir_ent.dll.upper(), imp_ent.name))
 syscall_emu_mem = b''
 for (i, (dll, fn)) in enumerate(imports_table):
     retn = 0
