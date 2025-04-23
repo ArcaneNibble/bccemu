@@ -17,6 +17,7 @@ ERROR_FILE_NOT_FOUND = 2
 ERROR_INVALID_HANDLE = 6
 ERROR_NO_MORE_FILES = 18
 ERROR_NOT_SUPPORTED = 50
+ERROR_FILE_EXISTS = 80
 ERROR_INVALID_PARAMETER = 87
 ERROR_MOD_NOT_FOUND = 126
 ERROR_PROC_NOT_FOUND = 127
@@ -120,6 +121,7 @@ class Win32Emu:
             ((b'KERNEL32.DLL', b'GetFileAttributesA'), self.GetFileAttributesA, 1),
             ((b'KERNEL32.DLL', b'CreateFileA'), self.CreateFileA, 7),
             ((b'KERNEL32.DLL', b'DeleteFileA'), self.DeleteFileA, 1),
+            ((b'KERNEL32.DLL', b'MoveFileA'), self.MoveFileA, 2),
             ((b'KERNEL32.DLL', b'GetVolumeInformationA'), self.GetVolumeInformationA, 8),
             ((b'KERNEL32.DLL', b'FileTimeToLocalFileTime'), self.FileTimeToLocalFileTime, 2),
             ((b'KERNEL32.DLL', b'FileTimeToDosDateTime'), self.FileTimeToDosDateTime, 3),
@@ -132,6 +134,8 @@ class Win32Emu:
             ((b'KERNEL32.DLL', b'InitializeCriticalSection'), self.InitializeCriticalSection, 1),
             ((b'KERNEL32.DLL', b'EnterCriticalSection'), self.EnterCriticalSection, 1),
             ((b'KERNEL32.DLL', b'LeaveCriticalSection'), self.LeaveCriticalSection, 1),
+            ((b'KERNEL32.DLL', b'GetCurrentProcessId'), self.GetCurrentProcessId, 0),
+            ((b'KERNEL32.DLL', b'GetCurrentThreadId'), self.GetCurrentThreadId, 0),
         ]
         self._emu_table_map = {}
         for (i, (key, _fn, _nargs)) in enumerate(self._emu_table):
@@ -186,8 +190,8 @@ class Win32Emu:
     
     def get_syscall_addr(self, key):
         if key not in self._emu_table_map:
-            return self._syscall_invalid_addr
-        return self._syscall_page_addr + 10*self._emu_table_map[key]
+            return (self._syscall_invalid_addr, False)
+        return (self._syscall_page_addr + 10*self._emu_table_map[key], True)
 
     def GetModuleHandleA(self, emu):
         module_name = get_stack_arg(emu, 0)
@@ -582,21 +586,36 @@ class Win32Emu:
         return hfile
 
     def DeleteFileA(self, emu):
-        global last_error
         p_fn = get_stack_arg(emu, 0)
         fn = get_c_str(emu, p_fn)
-        print(f"DeleteFileA {fn} (DUMMY)")
+        if TRACE:
+            print(f"DeleteFileA {fn} (DUMMY)")
 
-        # pretend to delete the file
-        return 1
+        self._last_error = ERROR_NOT_SUPPORTED
+        try:
+            os.unlink(fn)
+            return 1
+        except FileNotFoundError:
+            self._last_error = ERROR_FILE_NOT_FOUND
+        return 0
 
-        # self._last_error = ERROR_NOT_SUPPORTED
-        # try:
-        #     os.unlink(fn)
-        #     return 1
-        # except FileNotFoundError:
-        #     self._last_error = ERROR_FILE_NOT_FOUND
-        # return 0
+    def MoveFileA(self, emu):
+        p_existing = get_stack_arg(emu, 0)
+        existing = get_c_str(emu, p_existing)
+        p_new = get_stack_arg(emu, 1)
+        new = get_c_str(emu, p_new)
+        if TRACE:
+            print(f"MoveFileA {existing} -> {new}")
+
+        self._last_error = ERROR_NOT_SUPPORTED
+        try:
+            os.rename(existing, new)
+            return 1
+        except FileNotFoundError:
+            self._last_error = ERROR_FILE_NOT_FOUND
+        except FileExistsError:
+            self._last_error = ERROR_FILE_EXISTS
+        return 0
 
     def GetVolumeInformationA(self, emu):
         lpRootPathName = get_stack_arg(emu, 0)
@@ -730,3 +749,8 @@ class Win32Emu:
         return 0
     def LeaveCriticalSection(self, emu):
         return 0
+
+    def GetCurrentProcessId(self, emu):
+        return 1
+    def GetCurrentThreadId(self, emu):
+        return 1

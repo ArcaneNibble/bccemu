@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import binascii
 import pathlib
 import pefile
 import struct
@@ -46,6 +47,8 @@ def dump_all_registers(emu, dump_eip=False):
     if dump_eip:
         print(f"\tEIP = 0x{emu.reg_read(ux.UC_X86_REG_EIP):08x}")
 
+    stackdump = emu.mem_read(emu.reg_read(ux.UC_X86_REG_ESP), 32)
+    print(f"\tStack dump: {binascii.hexlify(stackdump)}")
 
 def hook_mem_invalid(emu, access, address, size, value, _user_data):
     eip = emu.reg_read(ux.UC_X86_REG_EIP)
@@ -116,9 +119,11 @@ class PEEmu:
         for imp_dir_ent in pe.DIRECTORY_ENTRY_IMPORT:
             for imp_ent in imp_dir_ent.imports:
                 key = (imp_dir_ent.dll.upper(), imp_ent.name)
-                syscall_addr = win32ctx.get_syscall_addr(key)
+                (syscall_addr, valid) = win32ctx.get_syscall_addr(key)
                 if TRACE:
                     print(f"{key} @ 0x{syscall_addr:08x} -> 0x{imp_ent.address:08x}")
+                if not valid:
+                    print(f"WARN: {key} NOT IMPLEMENTED!")
                 emu.mem_write(imp_ent.address, struct.pack("<I", syscall_addr))
 
         # set up other memory
@@ -173,7 +178,15 @@ class PEEmu:
 
 
 def main():
-    emu = PEEmu(['bcc32'] + sys.argv[1:], [])
+    args = sys.argv
+    if args[0].endswith(".py"):
+        args = args[1:]
+
+    if not len(args):
+        print(f"Usage: bccemu.py tool [tool_args...]")
+        sys.exit(-1)
+
+    emu = PEEmu(args, [])
     ret = emu.run()
     sys.exit(ret)
 
