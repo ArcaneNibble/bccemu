@@ -3,11 +3,14 @@
 import datetime
 import glob
 import os
+import pathlib
 import stat
 import struct
 import sys
 import unicorn as uc
 import unicorn.x86_const as ux
+
+DIR_FOR_THIS_SCRIPT = bytes(pathlib.Path(__file__).parent.resolve())
 
 TRACE = False
 
@@ -57,6 +60,16 @@ def fn_to_find_data(fn):
     ret += struct.pack("<IIII", s.st_size >> 32, s.st_size & 0xffffffff, 0, 0)
     ret += fn + b'\x00'
     return ret
+
+def mangle_path(path_in):
+    path = path_in.replace(b'\\', b'/')
+    if path.upper().startswith(b'Z:/'):
+        path = b'.' + path[2:]
+    elif path.upper().startswith(b'C:/'):
+        path = DIR_FOR_THIS_SCRIPT + path[2:]
+    if TRACE:
+        print(f"mangle: {path_in} -> {path}")
+    return path
 
 class Win32Emu:
     def __init__(self, args, env):
@@ -542,9 +555,7 @@ class Win32Emu:
         if TRACE:
             print(f"GetFileAttributesA {fn}")
 
-        # HACK
-        if fn.startswith(b'Z:\\'):
-            return FILE_ATTRIBUTE_NORMAL
+        fn = mangle_path(fn)
 
         self._last_error = ERROR_NOT_SUPPORTED
         try:
@@ -569,8 +580,12 @@ class Win32Emu:
         if TRACE:
             print(f"CreateFileA {fn} {dwCreationDisposition}")
 
+        fn = mangle_path(fn)
+
         # not very accurate emulation lol
-        if dwCreationDisposition == 1 or dwCreationDisposition == 2 or dwCreationDisposition == 5:
+        if dwCreationDisposition == 1:
+            mode = 'x+b'
+        elif dwCreationDisposition == 2 or dwCreationDisposition == 5:
             mode = 'w+b'
         elif dwCreationDisposition == 3 or dwCreationDisposition == 4:
             mode = 'r+b'
@@ -583,6 +598,9 @@ class Win32Emu:
         except FileNotFoundError:
             self._last_error = ERROR_FILE_NOT_FOUND
             return 0xffffffff
+        except FileExistsError:
+            self._last_error = ERROR_FILE_EXISTS
+            return 0xffffffff
         
         hfile = len(self._hfile_table) << 2
         self._hfile_table.append(ioio)
@@ -593,6 +611,8 @@ class Win32Emu:
         fn = get_c_str(emu, p_fn)
         if TRACE:
             print(f"DeleteFileA {fn} (DUMMY)")
+
+        fn = mangle_path(fn)
 
         self._last_error = ERROR_NOT_SUPPORTED
         try:
@@ -609,6 +629,9 @@ class Win32Emu:
         new = get_c_str(emu, p_new)
         if TRACE:
             print(f"MoveFileA {existing} -> {new}")
+
+        existing = mangle_path(existing)
+        new = mangle_path(new)
 
         self._last_error = ERROR_NOT_SUPPORTED
         try:
@@ -693,8 +716,28 @@ class Win32Emu:
         bufsz = get_stack_arg(emu, 1)
         buf = get_stack_arg(emu, 2)
         p_fn = get_stack_arg(emu, 3)
-        print(f"GetFullPathNameA {inp} (UNIMPL!)")
-        return 0
+
+        # XXX incomplete!
+        if not (inp.upper().startswith(b"C:") or inp.upper().startswith(b"Z:")):
+            outp = b'Z:\\' + inp
+        else:
+            outp = inp
+
+        if TRACE:
+            print(f"GetFullPathNameA {inp} -> {outp} (DUMMY)")
+
+        real_sz = min(bufsz - 1, len(outp))
+        emu.mem_write(buf, outp[:real_sz])
+        emu.mem_write(buf + real_sz, b'\x00')
+
+        if p_fn:
+            if outp.endswith(b'\\') or outp.endswith(b'/'):
+                emu.mem_write(p_fn, b'\x00\x00\x00\x00')
+            else:
+                fn_offs = outp.replace(b'/', b'\\').rfind(b'\\') + 1
+                emu.mem_write(p_fn, struct.pack("<I", buf + fn_offs))
+
+        return real_sz
 
     def CreateProcessA(self, emu):
         lpApplicationName = get_stack_arg(emu, 0)
