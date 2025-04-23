@@ -69,6 +69,11 @@ class Win32Emu:
         self._hfind_table = []
         self._exit_code = None
 
+        if len(args) > 0:
+            self._argv0 = args[0]
+        else:
+            self._argv0 = "a"
+
         env_args = b''
 
         for env_a in env:
@@ -231,8 +236,8 @@ class Win32Emu:
         out_fn = get_stack_arg(emu, 1)
         out_sz = get_stack_arg(emu, 2)
         if module == 0:
-            # TODO!
-            filename = b"C:\\BC5\\BIN\\BCC32.EXE\x00"
+            # XXX this path is hardcoded
+            filename = b"C:\\BC5\\BIN\\" + self._argv0.upper().encode() + b".EXE\x00"
             sz = min(out_sz, len(filename))
             if TRACE:
                 print(f"GetModuleFileNameA write to 0x{out_fn:08x} sz 0x{sz:x} orig_sz 0x{out_sz:x}")
@@ -554,7 +559,8 @@ class Win32Emu:
         dwCreationDisposition = get_stack_arg(emu, 4)
         dwFlagsAndAttributes = get_stack_arg(emu, 5)
         hTemplateFile = get_stack_arg(emu, 6)
-        print(f"CreateFileA {fn} {dwCreationDisposition}")
+        if TRACE:
+            print(f"CreateFileA {fn} {dwCreationDisposition}")
 
         # not very accurate emulation lol
         if dwCreationDisposition == 1 or dwCreationDisposition == 2 or dwCreationDisposition == 5:
@@ -579,7 +585,7 @@ class Win32Emu:
         global last_error
         p_fn = get_stack_arg(emu, 0)
         fn = get_c_str(emu, p_fn)
-        print(f"DeleteFileA {fn}")
+        print(f"DeleteFileA {fn} (DUMMY)")
 
         # pretend to delete the file
         return 1

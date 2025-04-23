@@ -29,10 +29,12 @@ pe = pefile.PE('BC5/BIN/BCC32.EXE')
 
 img_base = pe.OPTIONAL_HEADER.ImageBase
 img_sz = pe.OPTIONAL_HEADER.SizeOfImage
-print(f"Total 0x{img_sz:08x} bytes @ 0x{img_base:08x}")
+if TRACE:
+    print(f"Total 0x{img_sz:08x} bytes @ 0x{img_base:08x}")
 
 HEAP_START = (img_base + img_sz + PAGE_SZ - 1) // PAGE_SZ * PAGE_SZ
-print(f"Free memory starting at 0x{HEAP_START:08x}")
+if TRACE:
+    print(f"Free memory starting at 0x{HEAP_START:08x}")
 
 emu = uc.Uc(uc.UC_ARCH_X86, uc.UC_MODE_32)
 emu.mem_map(img_base, img_sz, uc.UC_PROT_READ)
