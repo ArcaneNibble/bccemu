@@ -26,7 +26,7 @@ STACK_END = 0x7c000000
 SYSCALL_EMU_ADDR = STACK_END
 
 TRACE = False
-FORCE_NO_JIT = True
+FORCE_NO_JIT = False
 
 
 # helpers and hooks
@@ -158,6 +158,7 @@ class PEEmu:
         self._ep = self._img_base + pe.OPTIONAL_HEADER.AddressOfEntryPoint
 
         emu.hook_add(uc.UC_HOOK_MEM_INVALID, hook_mem_invalid)
+        emu.hook_add(uc.UC_HOOK_CODE, hook_force_no_jit, begin=SYSCALL_EMU_ADDR, end=0xffffffff)
         if FORCE_NO_JIT:
             emu.hook_add(uc.UC_HOOK_CODE, hook_force_no_jit, begin=0, end=0xffffffff)
 
