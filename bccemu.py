@@ -182,6 +182,8 @@ def main():
     args = sys.argv
     if args[0].endswith(".py"):
         args = args[1:]
+    else:
+        args[0] = args[0].rsplit('/', 1)[-1]
 
     if not len(args):
         print(f"Usage: bccemu.py tool [tool_args...]")
