@@ -34,7 +34,7 @@ FORCE_NO_JIT = True
 TRACE = False
 
 # load the PE
-pe = pefile.PE('BC5/BIN/BRC32.EXE')
+pe = pefile.PE('BC5/BIN/TLINK32.EXE')
 
 img_base = pe.OPTIONAL_HEADER.ImageBase
 img_sz = pe.OPTIONAL_HEADER.SizeOfImage
@@ -53,7 +53,7 @@ env_ptr = ENV_ARGS_ADDR
 env_args += b'\x00'
 args_ptr = ENV_ARGS_ADDR + len(env_args)
 # command line (TODO)
-env_args += "BRC32".encode()
+env_args += "TLINK32".encode()
 for arg in sys.argv[1:]:
     env_args += (" " + arg).encode()
 env_args += b'\x00'
@@ -142,7 +142,7 @@ def GetModuleFileNameA(emu):
     out_sz = get_stack_arg(emu, 2)
     if module == 0:
         # todo
-        filename = b"C:\\BC5\\BIN\\BRC32.EXE\x00"
+        filename = b"C:\\BC5\\BIN\\TLINK32.EXE\x00"
         sz = min(out_sz, len(filename))
         print(f"GetModuleFileNameA write to 0x{out_fn:08x} sz 0x{sz:x} orig_sz 0x{out_sz:x}")
         emu.mem_write(out_fn, filename[:sz])
@@ -604,6 +604,13 @@ def GlobalMemoryStatus(emu):
     emu.mem_write(info, struct.pack("<IIIIIIII", 8*4, 0, 0x80000000, 0x80000000, 0, 0, 0x80000000, 0x80000000))
     return 0
 
+def InitializeCriticalSection(emu):
+    return 0
+def EnterCriticalSection(emu):
+    return 0
+def LeaveCriticalSection(emu):
+    return 0
+
 EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetModuleHandleA'): (GetModuleHandleA, 1),
     (b'KERNEL32.DLL', b'GetProcAddress'): (GetProcAddress, 2),
@@ -641,6 +648,9 @@ EMU_TABLE = {
     (b'KERNEL32.DLL', b'GetTimeZoneInformation'): (GetTimeZoneInformation, 1),
     (b'KERNEL32.DLL', b'GetPrivateProfileStringA'): (GetPrivateProfileStringA, 6),
     (b'KERNEL32.DLL', b'GlobalMemoryStatus'): (GlobalMemoryStatus, 1),
+    (b'KERNEL32.DLL', b'InitializeCriticalSection'): (InitializeCriticalSection, 1),
+    (b'KERNEL32.DLL', b'EnterCriticalSection'): (EnterCriticalSection, 1),
+    (b'KERNEL32.DLL', b'LeaveCriticalSection'): (LeaveCriticalSection, 1),
 }
 
 # load the headers
