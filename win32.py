@@ -67,7 +67,7 @@ class Win32Emu:
             sys.stderr.buffer,
         ]
         self._hfind_table = []
-        self._exit_code = None
+        self.exit_code = None
 
         if len(args) > 0:
             self._argv0 = args[0]
@@ -84,7 +84,7 @@ class Win32Emu:
 
         if len(args) > 0:
             env_args += args[0].encode()
-        for arg in sys.argv[1:]:
+        for arg in args[1:]:
             env_args += (" " + arg).encode()
         env_args += b'\x00'
 
@@ -417,7 +417,7 @@ class Win32Emu:
 
     def ExitProcess(self, emu):
         code = get_stack_arg(emu, 0)
-        self._exit_code = code
+        self.exit_code = code
         if TRACE:
             print(f"Process executed with status: {code}")
         emu.mem_write(emu.reg_read(ux.UC_X86_REG_ESP), b'\xff\xff\xff\xff')
