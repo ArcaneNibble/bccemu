@@ -136,6 +136,7 @@ class Win32Emu:
             ((b'KERNEL32.DLL', b'LeaveCriticalSection'), self.LeaveCriticalSection, 1),
             ((b'KERNEL32.DLL', b'GetCurrentProcessId'), self.GetCurrentProcessId, 0),
             ((b'KERNEL32.DLL', b'GetCurrentThreadId'), self.GetCurrentThreadId, 0),
+            ((b'KERNEL32.DLL', b'GetConsoleMode'), self.GetConsoleMode, 2),
         ]
         self._emu_table_map = {}
         for (i, (key, _fn, _nargs)) in enumerate(self._emu_table):
@@ -754,3 +755,6 @@ class Win32Emu:
         return 1
     def GetCurrentThreadId(self, emu):
         return 1
+
+    def GetConsoleMode(self, emu):
+        return 0

@@ -122,8 +122,8 @@ class PEEmu:
                 (syscall_addr, valid) = win32ctx.get_syscall_addr(key)
                 if TRACE:
                     print(f"{key} @ 0x{syscall_addr:08x} -> 0x{imp_ent.address:08x}")
-                if not valid:
-                    print(f"WARN: {key} NOT IMPLEMENTED!")
+                    if not valid:
+                        print(f"WARN: {key} NOT IMPLEMENTED!")
                 emu.mem_write(imp_ent.address, struct.pack("<I", syscall_addr))
 
         # set up other memory
