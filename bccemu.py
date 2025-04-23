@@ -34,7 +34,7 @@ FORCE_NO_JIT = True
 TRACE = False
 
 # load the PE
-pe = pefile.PE('BC5/BIN/TLINK32.EXE')
+pe = pefile.PE('BC5/BIN/BCC32I.EXE')
 
 img_base = pe.OPTIONAL_HEADER.ImageBase
 img_sz = pe.OPTIONAL_HEADER.SizeOfImage
@@ -53,7 +53,7 @@ env_ptr = ENV_ARGS_ADDR
 env_args += b'\x00'
 args_ptr = ENV_ARGS_ADDR + len(env_args)
 # command line (TODO)
-env_args += "TLINK32".encode()
+env_args += "bcc32i".encode()
 for arg in sys.argv[1:]:
     env_args += (" " + arg).encode()
 env_args += b'\x00'
@@ -142,9 +142,10 @@ def GetModuleFileNameA(emu):
     out_sz = get_stack_arg(emu, 2)
     if module == 0:
         # todo
-        filename = b"C:\\BC5\\BIN\\TLINK32.EXE\x00"
+        filename = b"C:\\BC5\\BIN\\BCC32I.EXE\x00"
         sz = min(out_sz, len(filename))
-        print(f"GetModuleFileNameA write to 0x{out_fn:08x} sz 0x{sz:x} orig_sz 0x{out_sz:x}")
+        if TRACE:
+            print(f"GetModuleFileNameA write to 0x{out_fn:08x} sz 0x{sz:x} orig_sz 0x{out_sz:x}")
         emu.mem_write(out_fn, filename[:sz])
         return len(filename) - 1
     last_error = ERROR_MOD_NOT_FOUND
@@ -161,14 +162,16 @@ def VirtualAlloc(emu):
     prot = get_stack_arg(emu, 3)
 
     if (ty & MEM_COMMIT) and not (ty & MEM_RESERVE) and addr:
-        print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x} (COMMIT)")
+        if TRACE:
+            print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x} (COMMIT)")
         return addr
 
     if addr:
         last_error = ERROR_INVALID_ADDRESS
         return 0
 
-    print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x}")
+    if TRACE:
+        print(f"VirtualAlloc @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} prot 0x{prot:08x}")
 
     addr = HEAP_START
     if sz == 0:
@@ -185,13 +188,15 @@ def VirtualFree(emu):
     addr = get_stack_arg(emu, 0)
     sz = get_stack_arg(emu, 1)
     ty = get_stack_arg(emu, 2)
-    print(f"VirtualFree @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} (DUMMY)")
+    if TRACE:
+        print(f"VirtualFree @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} (DUMMY)")
     return 1
 
 def GetStdHandle(emu):
     global last_error
     std_handle = get_stack_arg(emu, 0)
-    print(f"GetStdHandle {std_handle:08x}")
+    if TRACE:
+        print(f"GetStdHandle {std_handle:08x}")
     if std_handle == 0xfffffff6:
         # stdin
         return 0 << 2
