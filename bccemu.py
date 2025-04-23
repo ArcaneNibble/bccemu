@@ -154,6 +154,14 @@ class PEEmu:
         emu.mem_map(teb_addr, PAGE_SZ, uc.UC_PROT_READ | uc.UC_PROT_WRITE)
         emu.mem_write(teb_addr + 4, struct.pack("<II", STACK_END, STACK_END - STACK_SIZE))
         emu.mem_write(teb_addr + 0x18, struct.pack("<I", teb_addr))
+        emu.mem_write(teb_addr + 0x2c, struct.pack("<I", teb_addr + 0x1000))
+
+        if hasattr(pe, "DIRECTORY_ENTRY_TLS"):
+            tls = pe.DIRECTORY_ENTRY_TLS.struct
+            if tls.AddressOfCallBacks:
+                print(f"WARN: TLS AddressOfCallBacks not implemented")
+            emu.mem_write(tls.AddressOfIndex, b'\x00\x00\x00\x00')
+            emu.mem_write(teb_addr + 0x1000, struct.pack("<I", tls.StartAddressOfRawData))
 
         self._ep = self._img_base + pe.OPTIONAL_HEADER.AddressOfEntryPoint
 

@@ -12,7 +12,7 @@ import unicorn.x86_const as ux
 
 DIR_FOR_THIS_SCRIPT = bytes(pathlib.Path(__file__).parent.resolve())
 
-TRACE = False
+TRACE = True
 
 PAGE_SZ = 64*1024
 
@@ -82,6 +82,7 @@ class Win32Emu:
             sys.stderr.buffer,
         ]
         self._hfind_table = []
+        self._tls_table = []
         self.exit_code = None
 
         if len(args) > 0:
@@ -113,9 +114,11 @@ class Win32Emu:
             ((b'KERNEL32.DLL', b'GetEnvironmentStrings'), self.GetEnvironmentStrings, 0),
             ((b'KERNEL32.DLL', b'GetCommandLineA'), self.GetCommandLineA, 0),
             ((b'KERNEL32.DLL', b'GetVersion'), self.GetVersion, 0),
+            ((b'KERNEL32.DLL', b'GetVersionExA'), self.GetVersionExA, 1),
             ((b'KERNEL32.DLL', b'GetModuleFileNameA'), self.GetModuleFileNameA, 3),
             ((b'KERNEL32.DLL', b'VirtualAlloc'), self.VirtualAlloc, 4),
             ((b'KERNEL32.DLL', b'VirtualFree'), self.VirtualFree, 3),
+            ((b'KERNEL32.DLL', b'VirtualQuery'), self.VirtualQuery, 3),
             ((b'KERNEL32.DLL', b'GetStdHandle'), self.GetStdHandle, 1),
             ((b'KERNEL32.DLL', b'ReadFile'), self.ReadFile, 5),
             ((b'KERNEL32.DLL', b'WriteFile'), self.WriteFile, 5),
@@ -155,6 +158,11 @@ class Win32Emu:
             ((b'KERNEL32.DLL', b'FreeLibrary'), self.FreeLibrary, 1),
             ((b'KERNEL32.DLL', b'GetACP'), self.GetACP, 0),
             ((b'KERNEL32.DLL', b'IsDBCSLeadByteEx'), self.IsDBCSLeadByteEx, 2),
+            ((b'KERNEL32.DLL', b'GetCPInfo'), self.GetCPInfo, 2),
+            ((b'KERNEL32.DLL', b'TlsAlloc'), self.TlsAlloc, 0),
+            ((b'KERNEL32.DLL', b'TlsFree'), self.TlsFree, 1),
+            ((b'KERNEL32.DLL', b'TlsSetValue'), self.TlsSetValue, 2),
+            ((b'KERNEL32.DLL', b'TlsGetValue'), self.TlsGetValue, 1),
         ]
         self._emu_table_map = {}
         for (i, (key, _fn, _nargs)) in enumerate(self._emu_table):
@@ -253,6 +261,10 @@ class Win32Emu:
 
     def GetVersion(self, emu):
         return 0x0105   # winxp (5.1)
+    def GetVersionExA(self, emu):
+        info = get_stack_arg(emu, 0)
+        emu.mem_write(info + 4, struct.pack("<IIIIB", 5, 1, 0, 2, 0))
+        return 1
 
     def GetModuleFileNameA(self, emu):
         module = get_stack_arg(emu, 0)
@@ -309,6 +321,15 @@ class Win32Emu:
             print(f"VirtualFree @ 0x{addr:08x} sz 0x{sz:08x} type 0x{ty:08x} (DUMMY)")
         return 1
 
+    def VirtualQuery(self, emu):
+        addr = get_stack_arg(emu, 0)
+        buf = get_stack_arg(emu, 1)
+        bufsz = get_stack_arg(emu, 2)
+        data = struct.pack("<IIIHHIIII", 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        realsz = min(bufsz, len(data))
+        emu.mem_write(buf, data[:realsz])
+        return realsz
+
     def GetStdHandle(self, emu):
         std_handle = get_stack_arg(emu, 0)
 
@@ -332,7 +353,7 @@ class Win32Emu:
         hfile = get_stack_arg(emu, 0)
         buffer = get_stack_arg(emu, 1)
         sz = get_stack_arg(emu, 2)
-        read = get_stack_arg(emu, 3)
+        readsz = get_stack_arg(emu, 3)
         overlapped = get_stack_arg(emu, 4)
 
         if overlapped:
@@ -348,20 +369,23 @@ class Win32Emu:
             self._last_error = ERROR_INVALID_HANDLE
             return 0
         if TRACE:
-            print(f"ReadFile {ioio}")
+            print(f"ReadFile {ioio} {sz} 0x{readsz:08x}")
 
         buf = ioio.read(sz)
+        if TRACE:
+            print(f"ReadFile {ioio} -> {buf}")
 
         emu.mem_write(buffer, buf)
 
-        if read:
-            emu.mem_write(read, struct.pack("<I", len(buf)))
+        if readsz:
+            emu.mem_write(readsz, struct.pack("<I", len(buf)))
 
-        if len(buf) == sz:
-            return 1
-        else:
+        if len(buf) != sz:
             self._last_error = ERROR_HANDLE_EOF
+        if len(buf) == 0:
             return 0
+        else:
+            return 1
 
     def WriteFile(self, emu):
         hfile = get_stack_arg(emu, 0)
@@ -832,3 +856,34 @@ class Win32Emu:
         codepage = get_stack_arg(emu, 0)
         char = get_stack_arg(emu, 1)
         return (char & 0xff) <= 0x7f
+    def GetCPInfo(self, emu):
+        return 0
+
+    def TlsAlloc(self, emu):
+        idx = len(self._tls_table)
+        self._tls_table.append(0)
+        return idx
+    def TlsFree(self, emu):
+        slot = get_stack_arg(emu, 0)
+        if slot < len(self._tls_table):
+            return 1
+        self._last_error = ERROR_INVALID_PARAMETER
+        return 0
+    def TlsSetValue(self, emu):
+        slot = get_stack_arg(emu, 0)
+        val = get_stack_arg(emu, 1)
+
+        if slot < len(self._tls_table):
+            self._tls_table[slot] = val
+            return 1
+
+        self._last_error = ERROR_INVALID_PARAMETER
+        return 0
+    def TlsGetValue(self, emu):
+        slot = get_stack_arg(emu, 0)
+
+        if slot < len(self._tls_table):
+            return self._tls_table[slot]
+
+        self._last_error = ERROR_INVALID_PARAMETER
+        return 0
