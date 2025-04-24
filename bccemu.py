@@ -68,9 +68,9 @@ def hook_force_no_jit(_emu, _address, _size, _user_data):
 
 
 class PEEmu:
-    def __init__(self, args, env):
+    def __init__(self, args, env, ver='5'):
         # load the PE
-        pe = pefile.PE(DIR_FOR_THIS_SCRIPT + '/BC5/BIN/' + args[0].upper() + '.EXE')
+        pe = pefile.PE(DIR_FOR_THIS_SCRIPT + '/BC' + ver + '/BIN/' + args[0].upper() + '.EXE')
 
         self._img_base = pe.OPTIONAL_HEADER.ImageBase
         img_sz = pe.OPTIONAL_HEADER.SizeOfImage
@@ -197,7 +197,12 @@ def main():
         print(f"Usage: bccemu.py tool [tool_args...]")
         sys.exit(-1)
 
-    emu = PEEmu(args, [])
+    if args[0].find('_') != -1:
+        (args[0], ver) = args[0].rsplit('_', 1)
+    else:
+        ver = '5'
+
+    emu = PEEmu(args, [], ver)
     ret = emu.run()
     sys.exit(ret)
 
